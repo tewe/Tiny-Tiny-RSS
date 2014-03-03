@@ -162,7 +162,7 @@ class FeedParser {
 				$title = $xpath->query("//channel/title")->item(0);
 
 				if ($title) {
-					$this->title = $title->nodeValue;
+					$this->title = trim($title->nodeValue);
 				}
 
 				$link = $xpath->query("//channel/link")->item(0);
