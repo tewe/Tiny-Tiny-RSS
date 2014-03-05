@@ -3775,14 +3775,13 @@
 		$doc = new DOMDocument();
 		$doc->loadHTML($content);
 		$xpath = new DOMXPath($doc);
-		$entries = $xpath->query('/html/head/link[@rel="alternate"]');
+		$entries = $xpath->query('/html/head/link');
 		$feedUrls = array();
 		foreach ($entries as $entry) {
-			if ($entry->hasAttribute('href')) {
+			$rel = explode(' ', $entry->getAttribute('rel'));
+			$hasType = in_array($entry->getAttribute('type'), array('application/rss+xml', 'application/atom+xml'));
+			if ($entry->hasAttribute('href') and (in_array("feed", $rel) or (in_array("alternate", $rel) and $hasType))) {
 				$title = $entry->getAttribute('title');
-				if ($title == '') {
-					$title = $entry->getAttribute('type');
-				}
 				$feedUrl = rewrite_relative_url(
 					$baseUrl, $entry->getAttribute('href')
 				);
