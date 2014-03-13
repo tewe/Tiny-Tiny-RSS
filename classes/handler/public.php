@@ -3,7 +3,7 @@ class Handler_Public extends Handler {
 
 	private function generate_syndicated_feed($owner_uid, $feed, $is_cat,
 		$limit, $offset, $search, $search_mode,
-		$view_mode = false, $format = 'atom', $order = false, $orig_guid = false) {
+		$view_mode = false, $format = 'atom', $order = false, $orig_guid = false, $start_ts = false) {
 
 		require_once "lib/MiniTemplator.class.php";
 
@@ -37,10 +37,13 @@ class Handler_Public extends Handler {
 			break;
 		}
 
+		//function queryFeedHeadlines($feed, $limit, $view_mode, $cat_view, $search, $search_mode, $override_order = false, $offset = 0, $owner_uid = 0, $filter = false, $since_id = 0, $include_children = false, $ignore_vfeed_group = false, $override_strategy = false, $override_vfeed = false, $start_ts = false) {
+
+
 		$qfh_ret = queryFeedHeadlines($feed,
 			1, $view_mode, $is_cat, $search, $search_mode,
 			$date_sort_field, $offset, $owner_uid,
-			false, 0, false, true);
+			false, 0, false, true, false, false, $start_ts);
 
 		$result = $qfh_ret[0];
 
@@ -61,7 +64,7 @@ class Handler_Public extends Handler {
 		$qfh_ret = queryFeedHeadlines($feed,
 			$limit, $view_mode, $is_cat, $search, $search_mode,
 			$date_sort_field, $offset, $owner_uid,
-			false, 0, false, true);
+			false, 0, false, true, false, false, $start_ts);
 
 
 		$result = $qfh_ret[0];
@@ -375,6 +378,7 @@ class Handler_Public extends Handler {
 		$search_mode = $this->dbh->escape_string($_REQUEST["smode"]);
 		$view_mode = $this->dbh->escape_string($_REQUEST["view-mode"]);
 		$order = $this->dbh->escape_string($_REQUEST["order"]);
+		$start_ts = $this->dbh->escape_string($_REQUEST["ts"]);
 
 		$format = $this->dbh->escape_string($_REQUEST['format']);
 		$orig_guid = sql_bool_to_bool($_REQUEST["orig_guid"]);
@@ -397,7 +401,7 @@ class Handler_Public extends Handler {
 
 		if ($owner_id) {
 			$this->generate_syndicated_feed($owner_id, $feed, $is_cat, $limit,
-				$offset, $search, $search_mode, $view_mode, $format, $order, $orig_guid);
+				$offset, $search, $search_mode, $view_mode, $format, $order, $orig_guid, $start_ts);
 		} else {
 			header('HTTP/1.1 403 Forbidden');
 		}
@@ -587,6 +591,18 @@ class Handler_Public extends Handler {
 		}
 	}
 
+	/* function subtest() {
+		header("Content-type: text/plain; charset=utf-8");
+
+		$url = $_REQUEST["url"];
+
+		print "$url\n\n";
+
+
+		print_r(get_feeds_from_html($url, fetch_file_contents($url)));
+
+	} */
+
 	function subscribe() {
 		if (SINGLE_USER_MODE) {
 			login_sequence();
@@ -697,6 +713,8 @@ class Handler_Public extends Handler {
 	function forgotpass() {
 		startup_gettext();
 
+		@$hash = $_REQUEST["hash"];
+
 		header('Content-Type: text/html; charset=utf-8');
 		print "<html><head><title>Tiny Tiny RSS</title>
 		<link rel=\"shortcut icon\" type=\"image/png\" href=\"images/favicon.png\">
@@ -714,8 +732,45 @@ class Handler_Public extends Handler {
 
 		@$method = $_POST['method'];
 
-		if (!$method) {
-			print_notice(__("You will need to provide valid account name and email. New password will be sent on your email address."));
+		if ($hash) {
+			$login = $_REQUEST["login"];
+
+			if ($login) {
+				$result = $this->dbh->query("SELECT id, resetpass_token FROM ttrss_users
+					WHERE login = '$login'");
+
+				if ($this->dbh->num_rows($result) != 0) {
+					$id = $this->dbh->fetch_result($result, 0, "id");
+					$resetpass_token_full = $this->dbh->fetch_result($result, 0, "resetpass_token");
+					list($timestamp, $resetpass_token) = explode(":", $resetpass_token_full);
+
+					if ($timestamp && $resetpass_token &&
+						$timestamp >= time() - 15*60*60 &&
+						$resetpass_token == $hash) {
+
+							$result = $this->dbh->query("UPDATE ttrss_users SET resetpass_token = NULL
+								WHERE id = $id");
+
+							Pref_Users::resetUserPassword($id, true);
+
+							print "<p>"."Completed."."</p>";
+
+					} else {
+						print_error("Some of the information provided is missing or incorrect.");
+					}
+				} else {
+					print_error("Some of the information provided is missing or incorrect.");
+				}
+			} else {
+				print_error("Some of the information provided is missing or incorrect.");
+			}
+
+			print "<form method=\"GET\" action=\"index.php\">
+				<input type=\"submit\" value=\"".__("Return to Tiny Tiny RSS")."\">
+				</form>";
+
+		} else if (!$method) {
+			print_notice(__("You will need to provide valid account name and email. A password reset link will be sent to your email address."));
 
 			print "<form method='POST' action='public.php'>";
 			print "<input type='hidden' name='method' value='do'>";
@@ -756,17 +811,57 @@ class Handler_Public extends Handler {
 
 			} else {
 
+				print_notice("Password reset instructions are being sent to your email address.");
+
 				$result = $this->dbh->query("SELECT id FROM ttrss_users
 					WHERE login = '$login' AND email = '$email'");
 
 				if ($this->dbh->num_rows($result) != 0) {
 					$id = $this->dbh->fetch_result($result, 0, "id");
 
-					Pref_Users::resetUserPassword($id, false);
+					if ($id) {
+						$resetpass_token = sha1(get_random_bytes(128));
+						$resetpass_link = get_self_url_prefix() . "/public.php?op=forgotpass&hash=" . $resetpass_token .
+							"&login=" . urlencode($login);
 
-					print "<p>";
+						require_once 'classes/ttrssmailer.php';
+						require_once "lib/MiniTemplator.class.php";
 
-					print "<p>"."Completed."."</p>";
+						$tpl = new MiniTemplator;
+
+						$tpl->readTemplateFromFile("templates/resetpass_link_template.txt");
+
+						$tpl->setVariable('LOGIN', $login);
+						$tpl->setVariable('RESETPASS_LINK', $resetpass_link);
+
+						$tpl->addBlock('message');
+
+						$message = "";
+
+						$tpl->generateOutputToString($message);
+
+						$mail = new ttrssMailer();
+
+						$rc = $mail->quickMail($email, $login,
+							__("[tt-rss] Password reset request"),
+							$message, false);
+
+						if (!$rc) print_error($mail->ErrorInfo);
+
+						$resetpass_token_full = $this->dbh->escape_string(time() . ":" . $resetpass_token);
+
+						$result = $this->dbh->query("UPDATE ttrss_users
+							SET resetpass_token = '$resetpass_token_full'
+							WHERE login = '$login' AND email = '$email'");
+
+						//Pref_Users::resetUserPassword($id, false);
+
+						print "<p>";
+
+						print "<p>"."Completed."."</p>";
+					} else {
+						print_error("User ID not found.");
+					}
 
 					print "<form method=\"GET\" action=\"index.php\">
 						<input type=\"submit\" value=\"".__("Return to Tiny Tiny RSS")."\">
